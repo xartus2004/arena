@@ -1,0 +1,8 @@
+/arena
+/bin/
+/data/
+*.db
+*.test
+*.out
+coverage.*
+.env
