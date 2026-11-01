@@ -31,14 +31,25 @@ this container; run `dockerd >/tmp/dockerd.log 2>&1 &` first.
 
 - [x] **M1** — Step 0 report, repo skeleton, `runtime` interface, `fake` runtime,
   gVisor/Firecracker stubs, `env` YAML loader, unit tests, CI workflow.
-- [ ] M2 — Docker runtime, episode state machine, custody, grader sandbox, `fix-the-bug`, honest agent e2e.
+- [x] **M2** — Docker runtime (read-only rootfs, tmpfs quotas, caps dropped,
+  no-new-privileges, host-side freeze+kill for `KillUser`), episode state
+  machine with recorded transitions, custody (tar-stream validation:
+  symlink/FIFO/device/hardlink/depth/count/apparent-size limits), separate
+  grader sandbox, `fix-the-bug` env, honest + noop agents, HTTP API + Go
+  client with idempotent retries and backpressure. E2E on Docker: honest = 1.0,
+  noop baseline = 0.5.
 - [ ] M3 — red-team suite (12 attacks) + `arena redteam` table.
 - [ ] M4 — scheduler + warm pool, trajectory store (JSONL + SQLite), metrics, `mini-crm`.
 - [ ] M5 — benchmarks + README.
 
 ## Next
-M2: Docker runtime + episode state machine (tests first) + custody file checks (tests first).
+M3: red-team suite — 12 scripted adversarial agents, each run alongside an
+honest neighbour episode; `arena redteam` prints attack × runtime table.
 
 ## Known gaps
+- busybox `date -s` exits 0 even when the kernel refuses to set the clock,
+  so tests check the clock afterwards rather than trusting exit codes.
+- Docker integration tests do not run goleak (the Docker client keeps idle
+  HTTP connections); unit tests do.
 - No KVM / runsc on the dev host → only runc-level isolation can be demonstrated.
 - `network: allowlist` is part of the spec but no runtime enforces it yet (Docker returns ErrUnsupported rather than silently allowing everything).

@@ -1,0 +1,12 @@
+[
+  {"fn": "median", "args": [[1, 2, 3]], "want": 2},
+  {"fn": "median", "args": [[3, 1, 2]], "want": 2},
+  {"fn": "median", "args": [[1, 2, 3, 4]], "want": 2.5},
+  {"fn": "median", "args": [[10, -2, 7, 4]], "want": 5.5},
+  {"fn": "median", "args": [[5]], "want": 5},
+  {"fn": "median", "args": [[2.5, 1.5]], "want": 2.0},
+  {"fn": "median", "args": [[9, 9, 1, 1, 5]], "want": 5},
+  {"fn": "median", "args": [[]], "want": {"raises": "ValueError"}},
+  {"fn": "mean", "args": [[2, 4]], "want": 3},
+  {"fn": "value_range", "args": [[3, 3, 3]], "want": 0}
+]

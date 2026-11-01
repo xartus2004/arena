@@ -323,6 +323,30 @@ func (s *Sandbox) builtin(req rt.ExecRequest) rt.Result {
 		return fail(127, "fake: empty command")
 	case c[0] == "true":
 		return rt.Result{}
+	case len(c) == 3 && c[0] == "sh" && c[1] == "-c" && !strings.ContainsAny(c[2], "|&;<>$`'\"\\()*?\n"):
+		// Trivial scripts (a single command, no shell syntax) are re-dispatched.
+		req.Cmd = strings.Fields(c[2])
+		return s.builtin(req)
+	case len(c) == 4 && c[0] == "chown" && c[1] == "-R":
+		if req.User.UID != 0 {
+			return fail(1, "chown: Operation not permitted")
+		}
+		var uid, gid int
+		if _, err := fmt.Sscanf(c[2], "%d:%d", &uid, &gid); err != nil {
+			return fail(1, "chown: invalid owner "+c[2])
+		}
+		root := path.Clean(c[3])
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for k, n := range s.nodes {
+			if k == root || strings.HasPrefix(k, root+"/") {
+				n.UID, n.GID = uid, gid
+			}
+		}
+		return rt.Result{}
+	case c[0] == "chmod" || c[0] == "chown":
+		// Other permission changes are accepted and ignored by the fake.
+		return rt.Result{}
 	case c[0] == "echo":
 		return rt.Result{Stdout: []byte(strings.Join(c[1:], " ") + "\n")}
 	case len(c) == 3 && c[0] == "cat" && c[1] == "--":
