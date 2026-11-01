@@ -38,15 +38,28 @@ this container; run `dockerd >/tmp/dockerd.log 2>&1 &` first.
   grader sandbox, `fix-the-bug` env, honest + noop agents, HTTP API + Go
   client with idempotent retries and backpressure. E2E on Docker: honest = 1.0,
   noop baseline = 0.5.
-- [ ] M3 — red-team suite (12 attacks) + `arena redteam` table.
+- [x] **M3** — red-team suite: 12 scripted adversarial agents (`redteam/`),
+  each run concurrently with an honest neighbour episode on the same runtime;
+  verdicts are judged from evidence (reward vs the do-nothing baseline,
+  neighbour reward, grader errors, tool output). `arena redteam` prints the
+  attack × runtime table (`docs/REDTEAM.md`). Docker: 9 BLOCKED, 3 DETECTED,
+  0 NOT PROTECTED; fake/gvisor/firecracker are reported as N/A with reasons.
 - [ ] M4 — scheduler + warm pool, trajectory store (JSONL + SQLite), metrics, `mini-crm`.
 - [ ] M5 — benchmarks + README.
 
 ## Next
-M3: red-team suite — 12 scripted adversarial agents, each run alongside an
-honest neighbour episode; `arena redteam` prints attack × runtime table.
+M4: scheduler (worker pool, global concurrency, backpressure, graceful
+drain) + per-env warm pool, trajectory store (JSONL + SQLite index),
+Prometheus metrics, `mini-crm` env, `arena run` / `arena serve`.
 
 ## Known gaps
+- Red-team attack 5 (rewrite after submit): custody kills within milliseconds
+  of `submit`, before the attacker's 1 s delay elapses, so the attack shows
+  the ordering guarantee (verified kill → copy → separate grader sandbox)
+  rather than winning a race. There is no race to win by construction; the
+  fake-runtime unit test asserts the same ordering with surviving processes.
+- runc shares the host kernel: a kernel exploit is out of scope for the
+  Docker runtime and is the reason gVisor/Firecracker are on the roadmap.
 - busybox `date -s` exits 0 even when the kernel refuses to set the clock,
   so tests check the clock afterwards rather than trusting exit codes.
 - Docker integration tests do not run goleak (the Docker client keeps idle
