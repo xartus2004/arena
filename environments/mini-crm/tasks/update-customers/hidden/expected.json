@@ -1,0 +1,11 @@
+{
+  "customers": [
+    {"name": "Ada Lovelace", "email": "ada@analytical.engine", "tier": "pro"},
+    {"name": "Grace Hopper", "email": "grace@example.com", "tier": "enterprise"},
+    {"name": "Alan Turing", "email": "alan@example.com", "tier": "free"},
+    {"name": "Edsger Dijkstra", "email": "edsger@example.com", "tier": "enterprise"},
+    {"name": "Barbara Liskov", "email": "barbara@example.com", "tier": "pro"},
+    {"name": "Katherine Johnson", "email": "katherine@nasa.gov", "tier": "pro"}
+  ],
+  "changed": ["Ada Lovelace", "Grace Hopper", "Mallory Spam", "Katherine Johnson"]
+}

@@ -21,7 +21,7 @@ func newLogger(verbose bool) *slog.Logger {
 	if !verbose {
 		return slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
 // openRuntime returns the named runtime and a close func.

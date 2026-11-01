@@ -212,10 +212,10 @@ func (e *Episode) setupLocked(ctx context.Context) error {
 	if err := e.student.CopyIn(ctx, e.task.FilesDest, files, rt.Root); err != nil {
 		return rt.Infra("copy task files", err)
 	}
-	return runSteps(ctx, e.student, e.task.Setup, e.cfg.SetupTimeout, "setup")
+	return runSteps(ctx, e.log, e.student, e.task.Setup, e.cfg.SetupTimeout, "setup")
 }
 
-func runSteps(ctx context.Context, sb rt.Sandbox, steps []env.Step, defTimeout time.Duration, what string) error {
+func runSteps(ctx context.Context, log *slog.Logger, sb rt.Sandbox, steps []env.Step, defTimeout time.Duration, what string) error {
 	for i, st := range steps {
 		u, err := env.UserByName(st.User)
 		if err != nil {
@@ -226,6 +226,7 @@ func runSteps(ctx context.Context, sb rt.Sandbox, steps []env.Step, defTimeout t
 			timeout = defTimeout
 		}
 		res, err := sb.Exec(ctx, rt.ExecRequest{Cmd: []string{"sh", "-c", st.Run}, User: u, Timeout: timeout})
+		log.Debug(what+" step", "step", i, "user", u.Name, "duration", res.Duration, "exit", res.ExitCode)
 		if err != nil {
 			return rt.Infra(fmt.Sprintf("%s step %d", what, i), err)
 		}
@@ -536,7 +537,7 @@ func (e *Episode) gradeLocked(ctx context.Context, submissionDir string) (Verdic
 			return Verdict{}, rt.Infra("lock grader files", fmt.Errorf("%v: exit %d %v %s", c, r.ExitCode, err, r.Stderr))
 		}
 	}
-	if err := runSteps(ctx, gsb, e.task.Grader.Setup, e.cfg.SetupTimeout, "grader setup"); err != nil {
+	if err := runSteps(ctx, e.log, gsb, e.task.Grader.Setup, e.cfg.SetupTimeout, "grader setup"); err != nil {
 		return Verdict{}, err
 	}
 	res, err := gsb.Exec(ctx, rt.ExecRequest{

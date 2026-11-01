@@ -44,15 +44,32 @@ this container; run `dockerd >/tmp/dockerd.log 2>&1 &` first.
   neighbour reward, grader errors, tool output). `arena redteam` prints the
   attack × runtime table (`docs/REDTEAM.md`). Docker: 9 BLOCKED, 3 DETECTED,
   0 NOT PROTECTED; fake/gvisor/firecracker are reported as N/A with reasons.
-- [ ] M4 — scheduler + warm pool, trajectory store (JSONL + SQLite), metrics, `mini-crm`.
+- [x] **M4** — `scheduler`: worker pool with a global concurrency limit
+  shared with the HTTP API, bounded queue (`ErrQueueFull` / HTTP 429),
+  per-episode deadlines, graceful drain on shutdown (and forced cancel on
+  timeout, still destroying sandboxes). Warm pool (`scheduler.Pool`) wraps
+  any runtime, keeps N single-use sandboxes per spec, refills in the
+  background and expires idle ones. `store`: JSONL trajectory per attempt
+  (fields > 16 KiB truncated with a marker) behind a `Blobs` interface + a
+  SQLite index (modernc.org/sqlite) queryable by env/task/agent/status/reward;
+  retries upsert by episode ID. `metrics`: Prometheus counters/histograms.
+  `mini-crm` env (SQLite-backed HTTP service run as a separate uid; DB is the
+  submission). CLI: `arena run`, `arena serve`. Optional LLM policy
+  (`--agent llm`, only with `ANTHROPIC_API_KEY`).
 - [ ] M5 — benchmarks + README.
 
 ## Next
-M4: scheduler (worker pool, global concurrency, backpressure, graceful
-drain) + per-env warm pool, trajectory store (JSONL + SQLite index),
-Prometheus metrics, `mini-crm` env, `arena run` / `arena serve`.
+M5: `arena bench` (episodes/sec at concurrency 1/8/32, cold vs warm reset
+p50/p95/p99, custody+grade overhead) → `bench/RESULTS.md`, Go benchmarks,
+README (problem, mermaid architecture, red-team + benchmark tables, how to add
+an environment, limitations, roadmap).
 
 ## Known gaps
+- mini-crm setup was 6 s until the server skipped `HTTPServer`'s reverse-DNS
+  lookup (`socket.getfqdn`), which stalls without network. Environment authors
+  should expect the same from any code that resolves names.
+- A per-episode deadline (scheduler) is reported as an infrastructure
+  failure and is not retried; there is no separate "deadline" failure kind yet.
 - Red-team attack 5 (rewrite after submit): custody kills within milliseconds
   of `submit`, before the attacker's 1 s delay elapses, so the attack shows
   the ordering guarantee (verified kill → copy → separate grader sandbox)
