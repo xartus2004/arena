@@ -77,6 +77,10 @@ To resume on a fresh machine: start dockerd if needed, `make images`,
 `python3 scripts/update-readme.py`.
 
 ## Known gaps
+- CI (GitHub runners run as an unprivileged user) exposed that host-PID
+  `KillUser` silently got EPERM. Host signalling is now used only as root;
+  otherwise `KillUser` kills from inside the sandbox as the target uid after
+  temporarily raising the PIDs limit. Both modes are integration-tested.
 - Found under parallel integration load: the cgroup v1 freezer sometimes
   fails to freeze a container mid-fork-bomb ("unable to freeze"). `KillUser`
   now kills by host PID without freezing in that case and keeps looping

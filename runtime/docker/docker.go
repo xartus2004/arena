@@ -57,6 +57,9 @@ type Options struct {
 	Logger *slog.Logger
 	// PullMissing pulls images that are not present locally.
 	PullMissing bool
+	// ForceExecKill disables host-PID signalling in KillUser (tests use it
+	// to exercise the fallback that unprivileged hosts such as CI get).
+	ForceExecKill bool
 }
 
 // Runtime is the Docker runtime.
@@ -216,7 +219,9 @@ func (r *Runtime) Create(ctx context.Context, spec rt.Spec) (rt.Sandbox, error) 
 	insp, err := r.cli.ContainerInspect(ctx, created.ID)
 	if err == nil && insp.State != nil {
 		sb.initPID = insp.State.Pid
-		sb.hostPIDs = sharesPIDNamespace(insp.State.Pid, created.ID)
+		// Signalling other users' processes from the host needs root and
+		// a shared PID namespace with dockerd.
+		sb.hostPIDs = !r.opts.ForceExecKill && os.Geteuid() == 0 && sharesPIDNamespace(insp.State.Pid, created.ID)
 	}
 	sb.timer = time.AfterFunc(spec.Timeout, func() {
 		sb.log.Warn("sandbox lifetime exceeded; destroying", "timeout", spec.Timeout)
@@ -534,18 +539,37 @@ func (s *Sandbox) KillUser(ctx context.Context, uid int) error {
 			if err != nil {
 				return err
 			}
-		} else {
-			// Fallback: signal from inside as the same uid. kill(-1) as a
-			// non-root user reaches every process of that uid.
-			_, err := s.Exec(ctx, rt.ExecRequest{Cmd: []string{"kill", "-9", "-1"}, User: rt.User{UID: uid, GID: uid}, Timeout: 10 * time.Second})
-			if err != nil && !rt.IsInfra(err) {
-				return err
-			}
+		} else if err := s.killFromInside(ctx, uid); err != nil {
+			return err
 		}
 		time.Sleep(time.Duration(min(attempt*attempt, 100)) * time.Millisecond)
 	}
 	pids, _ := s.userPIDs(ctx, uid)
 	return fmt.Errorf("docker: %d processes of uid %d survived KillUser", len(pids), uid)
+}
+
+// killFromInside signals every process of uid from a process of that uid
+// inside the sandbox (kill(-1) as a non-root user reaches exactly the
+// processes of that uid). A fork bomb may have used every PID, leaving no
+// room to start the kill, so the PIDs limit is raised by a few slots for
+// the duration of the kill and then restored.
+func (s *Sandbox) killFromInside(ctx context.Context, uid int) error {
+	limit := s.spec.MaxPIDs
+	if limit <= 0 {
+		limit = 256
+	}
+	raised := limit + 8
+	if _, err := s.r.cli.ContainerUpdate(ctx, s.id, container.UpdateConfig{Resources: container.Resources{PidsLimit: &raised}}); err != nil {
+		return rt.Infra("docker update pids", err)
+	}
+	_, err := s.Exec(ctx, rt.ExecRequest{Cmd: []string{"kill", "-9", "-1"}, User: rt.User{UID: uid, GID: uid}, Timeout: 10 * time.Second})
+	if _, uerr := s.r.cli.ContainerUpdate(context.WithoutCancel(ctx), s.id, container.UpdateConfig{Resources: container.Resources{PidsLimit: &limit}}); uerr != nil {
+		return rt.Infra("docker restore pids", uerr)
+	}
+	if err != nil && !rt.IsInfra(err) {
+		return err
+	}
+	return nil
 }
 
 // userPIDs lists live (non-zombie) host PIDs owned by uid, read from the

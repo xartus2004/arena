@@ -18,9 +18,11 @@ import (
 
 const testImage = "python:3.12-alpine"
 
-func newRuntime(t *testing.T) *Runtime {
+func newRuntime(t *testing.T) *Runtime { return newRuntimeOpts(t, Options{PullMissing: true}) }
+
+func newRuntimeOpts(t *testing.T, opts Options) *Runtime {
 	t.Helper()
-	r, err := New(context.Background(), Options{PullMissing: true})
+	r, err := New(context.Background(), opts)
 	if err != nil {
 		t.Skipf("docker unavailable: %v", err)
 	}
@@ -124,9 +126,25 @@ func TestExecTimeoutStdinTruncation(t *testing.T) {
 	}
 }
 
+// killModes covers host-PID signalling (root on the docker host) and the
+// in-sandbox fallback that unprivileged hosts such as CI runners use.
+var killModes = []struct {
+	name  string
+	force bool
+}{{"host-pid", false}, {"in-sandbox", true}}
+
 func TestKillUserVerifiesNoneRemain(t *testing.T) {
-	r := newRuntime(t)
+	for _, m := range killModes {
+		t.Run(m.name, func(t *testing.T) { testKillUser(t, m.force) })
+	}
+}
+
+func testKillUser(t *testing.T, force bool) {
+	r := newRuntimeOpts(t, Options{PullMissing: true, ForceExecKill: force})
 	sb := newSandbox(t, r, nil)
+	if force && sb.HostPIDKill() {
+		t.Fatal("ForceExecKill ignored")
+	}
 	ctx := context.Background()
 	sh(t, sb, rt.Student, "for i in 1 2 3; do (setsid sh -c 'while :; do sleep 1; done' >/dev/null 2>&1 &); done; nohup sleep 1000 >/dev/null 2>&1 &")
 	sh(t, sb, rt.Service, "nohup sleep 1000 >/dev/null 2>&1 &")
@@ -148,7 +166,13 @@ func TestKillUserVerifiesNoneRemain(t *testing.T) {
 }
 
 func TestKillUserForkBomb(t *testing.T) {
-	r := newRuntime(t)
+	for _, m := range killModes {
+		t.Run(m.name, func(t *testing.T) { testKillUserForkBomb(t, m.force) })
+	}
+}
+
+func testKillUserForkBomb(t *testing.T, force bool) {
+	r := newRuntimeOpts(t, Options{PullMissing: true, ForceExecKill: force})
 	sb := newSandbox(t, r, nil)
 	ctx := context.Background()
 	_, _ = sb.Exec(ctx, rt.ExecRequest{Cmd: []string{"sh", "-c", "bomb() { bomb | bomb & }; bomb"}, User: rt.Student, Timeout: 2 * time.Second})

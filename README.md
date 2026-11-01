@@ -383,10 +383,12 @@ end-to-end tests cover the new task.
   `ErrUnsupported` rather than silently allowing egress.
 * **cgroup v1 host.** Limits were verified on cgroup v1; cgroup v2 hosts use
   the same Docker flags, but the PIDs-limit test reads both paths.
-* **Host-PID kill needs the same PID namespace as dockerd.** If arena runs
-  elsewhere (e.g. against a remote daemon), `KillUser` falls back to
-  `kill -9 -1` as the target uid inside the sandbox, which is weaker against
-  fork bombs. Verification still reads the process list from the daemon.
+* **Host-PID kill needs root and the same PID namespace as dockerd.**
+  Otherwise (an unprivileged CI runner, a remote daemon) `KillUser` falls
+  back to `kill -9 -1` as the target uid inside the sandbox, temporarily
+  raising the PIDs limit by a few slots so the kill can start even when a
+  fork bomb has used every PID. Verification always reads the process list
+  from the daemon, and both paths are integration-tested.
 * **Busybox tools lie sometimes.** `date -s` exits 0 even when the kernel
   refuses, so tests check outcomes, not exit codes.
 * **Scheduler deadlines are reported as infra failures** and are not retried.
