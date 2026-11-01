@@ -32,9 +32,9 @@ jobs:
         id: docker
         run: |
           if docker info >/dev/null 2>&1; then echo "ok=true" >> "$GITHUB_OUTPUT"; else echo "ok=false" >> "$GITHUB_OUTPUT"; fi
-      - name: pull sandbox image
+      - name: build sandbox image
         if: steps.docker.outputs.ok == 'true'
-        run: docker pull python:3.12-alpine
+        run: docker pull python:3.12-alpine && docker build -t arena-python:3.12 images/python
       - name: integration tests (docker)
         if: steps.docker.outputs.ok == 'true'
         run: go test -race -count=1 -tags integration -timeout 20m ./...

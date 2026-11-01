@@ -56,15 +56,32 @@ this container; run `dockerd >/tmp/dockerd.log 2>&1 &` first.
   `mini-crm` env (SQLite-backed HTTP service run as a separate uid; DB is the
   submission). CLI: `arena run`, `arena serve`. Optional LLM policy
   (`--agent llm`, only with `ANTHROPIC_API_KEY`).
-- [ ] M5 — benchmarks + README.
+- [x] **M5** — `arena bench` → `bench/RESULTS.md` (reset latency cold
+  363 ms vs warm 176 ms p50; ~1.1 episodes/sec CPU-bound on 4 vCPUs at
+  concurrency 8 and 32 with zero infra failures; custody ~350 ms, grade
+  ~1.2 s), Go benchmarks for custody and the lifecycle, README with
+  architecture/lifecycle diagrams, guarantee table, live red-team and
+  benchmark tables (`scripts/update-readme.py`), environment authoring
+  guide, limitations and roadmap. `images/python` (precompiled stdlib) cut
+  GRADE from 3.1 s to 1.2 s. Makefile.
 
-## Next
-M5: `arena bench` (episodes/sec at concurrency 1/8/32, cold vs warm reset
-p50/p95/p99, custody+grade overhead) → `bench/RESULTS.md`, Go benchmarks,
-README (problem, mermaid architecture, red-team + benchmark tables, how to add
-an environment, limitations, roadmap).
+## Next (all milestones done; suggested follow-ups)
+1. gVisor runtime: Docker runtime with `HostConfig.Runtime = "runsc"` once
+   runsc is installable; rerun `make redteam` to fill its column.
+2. Network allowlist via a per-sandbox egress proxy.
+3. S3 implementation of `store.Blobs`; AgentEnv protocol adapter.
+4. A distinct `deadline` failure kind.
+
+To resume on a fresh machine: start dockerd if needed, `make images`,
+`make test`, `make integration`, `make redteam`, `make bench`,
+`python3 scripts/update-readme.py`.
 
 ## Known gaps
+- Found under parallel integration load: the cgroup v1 freezer sometimes
+  fails to freeze a container mid-fork-bomb ("unable to freeze"). `KillUser`
+  now kills by host PID without freezing in that case and keeps looping
+  until the host-side process list is empty (verified with repeated parallel
+  runs).
 - mini-crm setup was 6 s until the server skipped `HTTPServer`'s reverse-DNS
   lookup (`socket.getfqdn`), which stalls without network. Environment authors
   should expect the same from any code that resolves names.

@@ -113,7 +113,7 @@ func (h *harness) advance(d time.Duration) {
 	h.mu.Unlock()
 }
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t testing.TB) *harness {
 	t.Helper()
 	dir := t.TempDir()
 	for name, body := range map[string]string{

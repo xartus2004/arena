@@ -116,7 +116,7 @@ func (r *Runtime) ensureImage(ctx context.Context, ref string) error {
 		}
 		rc, err := r.cli.ImagePull(ctx, ref, image.PullOptions{})
 		if err != nil {
-			return fmt.Errorf("docker: pull %s: %w", ref, err)
+			return fmt.Errorf("docker: pull %s: %w (local images such as arena-python are built with `make images`)", ref, err)
 		}
 		_, err = io.Copy(io.Discard, rc)
 		rc.Close()
@@ -501,7 +501,7 @@ func (s *Sandbox) KillUser(ctx context.Context, uid int) error {
 	if uid == 0 {
 		return errors.New("docker: refusing to KillUser(0)")
 	}
-	for attempt := 0; attempt < 20; attempt++ {
+	for attempt := 0; attempt < 50; attempt++ {
 		pids, err := s.userPIDs(ctx, uid)
 		if err != nil {
 			return err
@@ -511,18 +511,25 @@ func (s *Sandbox) KillUser(ctx context.Context, uid int) error {
 		}
 		if s.hostPIDs {
 			// Freeze so nothing can fork while we kill, signal by host PID,
-			// then thaw so the SIGKILLs are delivered.
-			if err := s.r.cli.ContainerPause(ctx, s.id); err != nil {
-				return rt.Infra("docker pause", err)
+			// then thaw so the SIGKILLs are delivered. The cgroup v1
+			// freezer can fail to converge while a fork bomb is spawning
+			// ("unable to freeze"); then kill unfrozen and let the loop
+			// repeat. Freezing only speeds this up: the guarantee is the
+			// host-side verification that no process remains.
+			paused := s.r.cli.ContainerPause(ctx, s.id) == nil
+			if !paused {
+				s.log.Debug("freeze failed; killing without freeze", "attempt", attempt)
 			}
-			frozen, err := s.userPIDs(ctx, uid)
+			targets, err := s.userPIDs(ctx, uid)
 			if err == nil {
-				for _, p := range frozen {
+				for _, p := range targets {
 					_ = syscall.Kill(p, syscall.SIGKILL)
 				}
 			}
-			if uerr := s.r.cli.ContainerUnpause(context.WithoutCancel(ctx), s.id); uerr != nil {
-				return rt.Infra("docker unpause", uerr)
+			if paused {
+				if uerr := s.r.cli.ContainerUnpause(context.WithoutCancel(ctx), s.id); uerr != nil {
+					return rt.Infra("docker unpause", uerr)
+				}
 			}
 			if err != nil {
 				return err
@@ -535,7 +542,7 @@ func (s *Sandbox) KillUser(ctx context.Context, uid int) error {
 				return err
 			}
 		}
-		time.Sleep(time.Duration(attempt*attempt) * time.Millisecond)
+		time.Sleep(time.Duration(min(attempt*attempt, 100)) * time.Millisecond)
 	}
 	pids, _ := s.userPIDs(ctx, uid)
 	return fmt.Errorf("docker: %d processes of uid %d survived KillUser", len(pids), uid)
