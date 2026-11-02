@@ -278,15 +278,15 @@ func TestKillUserMemoryHog(t *testing.T) {
 	for _, m := range killModes {
 		t.Run(m.name, func(t *testing.T) {
 			r := newRuntimeOpts(t, Options{PullMissing: true, ForceExecKill: m.force})
-			sb := newSandbox(t, r, func(s *rt.Spec) { s.MemoryBytes = 96 << 20 })
+			sb := newSandbox(t, r, func(s *rt.Spec) { s.MemoryBytes = 192 << 20 })
 			ctx := context.Background()
-			// Allocate ~60% of the limit (gVisor's own kernel needs part of
-			// the sandbox's memory), then hold it.
+			// Hold a third of the limit: enough to matter, while leaving room
+			// for gVisor's own kernel, which is charged to the sandbox too.
 			sh(t, sb, rt.Student, `nohup python3 -c "
 import time
 x=[]
 try:
-    while len(x) < 56: x.append(bytearray(1<<20))
+    while len(x) < 64: x.append(bytearray(1<<20))
 except MemoryError:
     pass
 time.sleep(600)" >/dev/null 2>&1 &

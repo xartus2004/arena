@@ -370,9 +370,20 @@ func (s *Sandbox) Exec(ctx context.Context, req rt.ExecRequest) (rt.Result, erro
 
 // exec runs req, streaming output into stdout/stderr.
 func (s *Sandbox) exec(ctx context.Context, req rt.ExecRequest, stdout, stderr io.Writer) (code int, timedOut bool, err error) {
+	cmd := req.Cmd
+	if s.r.sandboxedKernel() && req.User.UID != 0 {
+		// Container-level rlimits do not reach `docker exec` processes
+		// under gVisor, so every unprivileged command caps its own process
+		// count first (RLIMIT_NPROC is per sandbox inside gVisor's kernel).
+		pids := s.spec.MaxPIDs
+		if pids <= 0 {
+			pids = 256
+		}
+		cmd = append([]string{"sh", "-c", `ulimit -u "$0" || exit 126; exec "$@"`, strconv.FormatInt(pids, 10)}, req.Cmd...)
+	}
 	opts := container.ExecOptions{
 		User:         fmt.Sprintf("%d:%d", req.User.UID, req.User.GID),
-		Cmd:          req.Cmd,
+		Cmd:          cmd,
 		Env:          req.Env,
 		WorkingDir:   req.Dir,
 		AttachStdout: true,
