@@ -1,32 +1,30 @@
-// Package gvisor is a placeholder for a gVisor (runsc) runtime.
+// Package gvisor provides a gVisor runtime: the Docker runtime with the
+// "runsc" OCI runtime, so every sandbox runs on gVisor's user-space kernel
+// (the Sentry) instead of talking to the host kernel directly.
 //
-// gVisor interposes a user-space kernel between the sandbox and the host,
-// which closes most kernel attack surface that plain runc containers expose.
-// The intended implementation is the Docker runtime with
-// HostConfig.Runtime = "runsc"; it was not built because runsc is not
-// installed on the development host. Every method returns ErrUnsupported.
+// It needs runsc installed and registered with dockerd, e.g. in
+// /etc/docker/daemon.json:
+//
+//	{"runtimes": {"runsc": {"path": "/usr/local/bin/runsc"}}}
+//
+// Differences from runc that arena relies on: processes inside a gVisor
+// sandbox are not host processes, so custody never signals host PIDs and
+// reads the process table from the sandbox kernel instead (see
+// runtime/docker). All other guarantees use the same Docker settings.
 package gvisor
 
 import (
 	"context"
-	"fmt"
+	"log/slog"
 
-	rt "github.com/xartus2004/arena/runtime"
+	"github.com/xartus2004/arena/runtime/docker"
 )
 
-// Runtime is the gVisor stub.
-type Runtime struct{}
+// OCIRuntime is the name runsc is registered under in dockerd.
+const OCIRuntime = "runsc"
 
-// New returns the stub runtime.
-func New() *Runtime { return &Runtime{} }
-
-// Name implements runtime.Runtime.
-func (*Runtime) Name() string { return "gvisor" }
-
-// Capabilities implements runtime.Runtime; the stub provides nothing.
-func (*Runtime) Capabilities() rt.Capabilities { return rt.Capabilities{} }
-
-// Create implements runtime.Runtime.
-func (*Runtime) Create(context.Context, rt.Spec) (rt.Sandbox, error) {
-	return nil, fmt.Errorf("gvisor: %w (runsc not available; see README roadmap)", rt.ErrUnsupported)
+// New connects to Docker and checks that runsc is registered. When it is
+// not, the error wraps runtime.ErrUnsupported.
+func New(ctx context.Context, log *slog.Logger) (*docker.Runtime, error) {
+	return docker.New(ctx, docker.Options{PullMissing: true, Logger: log, OCIRuntime: OCIRuntime})
 }

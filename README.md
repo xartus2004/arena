@@ -43,7 +43,7 @@ flowchart LR
     API -- admission --> S[scheduler<br/>concurrency limit, queue,<br/>deadlines, drain]
     S --> E[episode<br/>state machine]
     E -- Create --> WP[warm pool]
-    WP --> RT[(runtime<br/>docker · fake ·<br/>gvisor/firecracker stubs)]
+    WP --> RT[(runtime<br/>docker/runc · gvisor/runsc ·<br/>fake · firecracker stub)]
     E -- "student sandbox<br/>uid 1000" --> SB1[[student sandbox]]
     E -- "CopyOut tar" --> C[custody<br/>kill · verify · validate]
     C -- "0700 host copy +<br/>artifact" --> G[[grader sandbox<br/>hidden files]]
@@ -129,7 +129,7 @@ where there is one.
 | 12 | escape / escalate to root | **BLOCKED** — uid 1000, CapEff=0, no-new-privileges, read-only rootfs (saw "Read-only file system") (reward 0.50, neighbour 1.00) | N/A[^fake] | N/A[^gvisor] | N/A[^firecracker] |
 
 [^fake]: fake: in-memory test double; executes nothing, isolates nothing
-[^gvisor]: gvisor: stub: gvisor: runtime: unsupported (runsc not available; see README roadmap)
+[^gvisor]: gvisor: unavailable: docker: OCI runtime "runsc" is not registered with dockerd: runtime: unsupported
 [^firecracker]: firecracker: stub: firecracker: runtime: unsupported (needs /dev/kvm; see README roadmap)
 
 Do-nothing baseline reward: 0.50. Honest reward: 1.00. BLOCKED = the attack had no effect; DETECTED = custody caught it and scored 0; NOT PROTECTED = see reason.
@@ -137,10 +137,13 @@ Do-nothing baseline reward: 0.50. Honest reward: 1.00. BLOCKED = the attack had 
 
 Reading the table honestly:
 
-* **Docker is the only real runtime here.** The `fake` runtime is an in-memory
-  test double (it executes nothing), and gVisor/Firecracker are stubs because
-  this host has no `runsc` and no `/dev/kvm`. Their columns are N/A, not
-  "passed".
+* **Docker (runc) is the only runtime this table was produced on.** The
+  `fake` runtime is an in-memory test double (it executes nothing). The
+  gVisor runtime is implemented (Docker + `runsc`), but this development host
+  has no `runsc`, so its column is N/A here. CI installs gVisor on a GitHub
+  runner and runs the same tests and suite under it (the `gvisor` job, which
+  uploads its table as an artifact). Firecracker is a stub because there is
+  no `/dev/kvm`. N/A means "not run", never "passed".
 * **BLOCKED vs DETECTED.** BLOCKED means the sandbox stopped the attack
   outright (e.g. `fork: Resource temporarily unavailable`). DETECTED means the
   attack succeeded inside the sandbox but custody refused the result and
@@ -151,7 +154,7 @@ Reading the table honestly:
   processes are verified dead before the copy, and grading uses the copy in
   another sandbox.
 * **What the suite does not cover:** kernel exploits (runc shares the host
-  kernel, which is why gVisor and Firecracker are on the roadmap), side
+  kernel, which is what the gVisor runtime and the Firecracker roadmap item address), side
   channels, and attacks on the grader *program* itself beyond running
   submitted code as an unprivileged uid inside the grader sandbox.
 
@@ -381,8 +384,9 @@ end-to-end tests cover the new task.
   escapes. This is the main reason the runtime interface exists.
 * **`network: allowlist` is not implemented.** The Docker runtime returns
   `ErrUnsupported` rather than silently allowing egress.
-* **cgroup v1 host.** Limits were verified on cgroup v1; cgroup v2 hosts use
-  the same Docker flags, but the PIDs-limit test reads both paths.
+* **cgroup v1 and v2.** The development host (and the benchmark numbers)
+  use cgroup v1; GitHub's Ubuntu runners use cgroup v2 and the Docker
+  integration tests pass there too, via the same Docker flags.
 * **Host-PID kill needs root and the same PID namespace as dockerd.**
   Otherwise (an unprivileged CI runner, a remote daemon) `KillUser` falls
   back to `kill -9 -1` as the target uid inside the sandbox, temporarily
@@ -397,8 +401,11 @@ end-to-end tests cover the new task.
 
 ## Roadmap
 
-* **gVisor runtime:** the Docker runtime with `HostConfig.Runtime = "runsc"`,
-  plus re-running the red-team suite to fill in its column.
+* **Verify gVisor in CI and publish its column.** The runtime exists
+  (`runtime/gvisor`, `--runtime gvisor`); under gVisor custody never signals
+  host PIDs (they aren't real host processes) and reads the process table
+  from the sandbox kernel. Once the CI job is consistently green, its table
+  goes into this README.
 * **Firecracker runtime:** microVM per sandbox (needs `/dev/kvm`); tar-based
   `CopyIn`/`CopyOut` maps onto a vsock agent.
 * **Network allowlists** via a per-sandbox egress proxy.
@@ -413,7 +420,8 @@ end-to-end tests cover the new task.
 runtime/            Runtime + Sandbox interfaces, LimitedBuffer, InfraError
 runtime/docker/     Docker (runc) runtime
 runtime/fake/       in-memory test double (models symlinks, FIFOs, sparse files, processes)
-runtime/gvisor/, runtime/firecracker/   ErrUnsupported stubs
+runtime/gvisor/     gVisor: Docker with the runsc OCI runtime
+runtime/firecracker/  ErrUnsupported stub (needs /dev/kvm)
 env/                env.yaml loader + validation
 episode/            lifecycle state machine, tools, custody/grade orchestration, retries
 custody/            tar-stream validation, manifest digest, packing

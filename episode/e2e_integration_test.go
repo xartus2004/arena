@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -18,8 +19,11 @@ import (
 
 func dockerConfig(t *testing.T) episode.Config {
 	t.Helper()
-	r, err := docker.New(context.Background(), docker.Options{PullMissing: true})
+	r, err := docker.New(context.Background(), docker.Options{PullMissing: true, OCIRuntime: os.Getenv("ARENA_DOCKER_RUNTIME")})
 	if err != nil {
+		if os.Getenv("ARENA_DOCKER_RUNTIME") != "" {
+			t.Fatalf("requested OCI runtime unavailable: %v", err)
+		}
 		t.Skipf("docker unavailable: %v", err)
 	}
 	t.Cleanup(func() { r.Close() })

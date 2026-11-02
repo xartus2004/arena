@@ -65,9 +65,18 @@ this container; run `dockerd >/tmp/dockerd.log 2>&1 &` first.
   guide, limitations and roadmap. `images/python` (precompiled stdlib) cut
   GRADE from 3.1 s to 1.2 s. Makefile.
 
-## Next (all milestones done; suggested follow-ups)
-1. gVisor runtime: Docker runtime with `HostConfig.Runtime = "runsc"` once
-   runsc is installable; rerun `make redteam` to fill its column.
+## Post-milestone work
+- [x] gVisor runtime implemented (`runtime/gvisor`: Docker + `runsc`). Under
+  gVisor, custody never signals host PIDs and lists processes from the
+  sandbox kernel's /proc. Not runnable on the dev host (no runsc; downloading
+  it was not permitted in this session), so a `gvisor` CI job installs runsc
+  from Google's apt repo and runs the integration + red-team suites under it
+  (`ARENA_DOCKER_RUNTIME=runsc`; experimental / continue-on-error).
+- [x] CI actions bumped to Node 24 versions; README cgroup v1/v2 note fixed.
+
+## Next (suggested follow-ups)
+1. Make the `gvisor` CI job green, then put its red-team column in the README
+   and drop continue-on-error.
 2. Network allowlist via a per-sandbox egress proxy.
 3. S3 implementation of `store.Blobs`; AgentEnv protocol adapter.
 4. A distinct `deadline` failure kind.

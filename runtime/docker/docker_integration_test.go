@@ -20,10 +20,16 @@ const testImage = "python:3.12-alpine"
 
 func newRuntime(t *testing.T) *Runtime { return newRuntimeOpts(t, Options{PullMissing: true}) }
 
+// newRuntimeOpts connects to Docker. ARENA_DOCKER_RUNTIME=runsc runs the
+// whole suite under gVisor.
 func newRuntimeOpts(t *testing.T, opts Options) *Runtime {
 	t.Helper()
+	opts.OCIRuntime = os.Getenv("ARENA_DOCKER_RUNTIME")
 	r, err := New(context.Background(), opts)
 	if err != nil {
+		if os.Getenv("ARENA_DOCKER_RUNTIME") != "" {
+			t.Fatalf("requested OCI runtime unavailable: %v", err)
+		}
 		t.Skipf("docker unavailable: %v", err)
 	}
 	t.Cleanup(func() { r.Close() })

@@ -214,7 +214,15 @@ func Markdown(cols []RuntimeColumn, baseline float64) string {
 		}
 	}
 	b.WriteString("\n")
-	fmt.Fprintf(&b, "\nDo-nothing baseline reward: %.2f. Honest reward: 1.00. ", baseline)
+	ran := false
+	for _, c := range cols {
+		ran = ran || c.Results != nil
+	}
+	if ran {
+		fmt.Fprintf(&b, "\nDo-nothing baseline reward: %.2f. Honest reward: 1.00. ", baseline)
+	} else {
+		b.WriteString("\nNo runtime could run the suite on this host. ")
+	}
 	b.WriteString("BLOCKED = the attack had no effect; DETECTED = custody caught it and scored 0; NOT PROTECTED = see reason.\n")
 	return b.String()
 }

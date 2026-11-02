@@ -208,6 +208,7 @@ type Capabilities struct {
 	ClockIsolation   bool // sandbox cannot change the host clock
 	NoPrivEscalation bool // setuid/caps cannot lift the student to root
 	RealExecution    bool // commands are actually executed
+	KernelIsolation  bool // the sandbox does not talk to the host kernel directly (gVisor, microVM)
 }
 
 // InfraError marks a failure of the platform rather than of the agent.

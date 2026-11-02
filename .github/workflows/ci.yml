@@ -7,14 +7,14 @@ jobs:
   unit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - name: gofmt
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - name: vet
-        run: go vet ./...
+        run: go vet ./... && go vet -tags integration ./...
       - name: staticcheck
         run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
       - name: unit tests
@@ -24,8 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: unit
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - name: docker available?
@@ -35,6 +35,46 @@ jobs:
       - name: build sandbox image
         if: steps.docker.outputs.ok == 'true'
         run: docker pull python:3.12-alpine && docker build -t arena-python:3.12 images/python
-      - name: integration tests (docker)
+      - name: integration tests (docker / runc)
         if: steps.docker.outputs.ok == 'true'
         run: go test -race -count=1 -tags integration -timeout 20m ./...
+
+  # gVisor (runsc) is installed from Google's official apt repository and
+  # registered with dockerd; the same integration suite and the red-team
+  # suite then run with every sandbox on gVisor's user-space kernel.
+  # Experimental until it has a track record: a failure here is reported
+  # but does not fail the workflow.
+  gvisor:
+    runs-on: ubuntu-latest
+    needs: unit
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: install gVisor
+        run: |
+          curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" | sudo tee /etc/apt/sources.list.d/gvisor.list
+          sudo apt-get update -q && sudo apt-get install -y -q runsc
+          sudo runsc install
+          sudo systemctl restart docker
+          runsc --version
+          docker info --format '{{json .Runtimes}}' | grep -q runsc
+      - name: build sandbox image
+        run: docker pull python:3.12-alpine && docker build -t arena-python:3.12 images/python
+      - name: integration tests (gvisor)
+        env:
+          ARENA_DOCKER_RUNTIME: runsc
+        run: go test -count=1 -v -tags integration -timeout 20m ./runtime/docker/ ./episode/ ./redteam/
+      - name: red-team table (docker vs gvisor)
+        if: always()
+        run: |
+          go build -o bin/arena ./cmd/arena
+          ./bin/arena redteam -runtimes docker,gvisor -data /tmp/arena -out redteam-gvisor.md
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: redteam-gvisor
+          path: redteam-gvisor.md

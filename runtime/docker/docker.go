@@ -60,6 +60,9 @@ type Options struct {
 	// ForceExecKill disables host-PID signalling in KillUser (tests use it
 	// to exercise the fallback that unprivileged hosts such as CI get).
 	ForceExecKill bool
+	// OCIRuntime selects a non-default OCI runtime registered with dockerd,
+	// e.g. "runsc" for gVisor. Empty means dockerd's default (runc).
+	OCIRuntime string
 }
 
 // Runtime is the Docker runtime.
@@ -87,7 +90,18 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	r := &Runtime{cli: cli, log: opts.Logger.With("runtime", "docker"), opts: opts, images: map[string]bool{}}
+	if opts.OCIRuntime != "" {
+		info, err := cli.Info(pctx)
+		if err != nil {
+			cli.Close()
+			return nil, fmt.Errorf("docker: info: %w", err)
+		}
+		if _, ok := info.Runtimes[opts.OCIRuntime]; !ok {
+			cli.Close()
+			return nil, fmt.Errorf("docker: OCI runtime %q is not registered with dockerd: %w", opts.OCIRuntime, rt.ErrUnsupported)
+		}
+	}
+	r := &Runtime{cli: cli, log: opts.Logger.With("runtime", runtimeName(opts)), opts: opts, images: map[string]bool{}}
 	return r, nil
 }
 
@@ -95,7 +109,22 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 func (r *Runtime) Close() error { return r.cli.Close() }
 
 // Name implements runtime.Runtime.
-func (r *Runtime) Name() string { return "docker" }
+func (r *Runtime) Name() string { return runtimeName(r.opts) }
+
+func runtimeName(o Options) string {
+	switch o.OCIRuntime {
+	case "":
+		return "docker"
+	case "runsc":
+		return "gvisor"
+	}
+	return "docker-" + o.OCIRuntime
+}
+
+// sandboxedKernel reports whether processes run under a user-space kernel
+// (gVisor). Their PIDs are not host PIDs, so they must never be signalled
+// from the host, and the process list comes from the sandbox kernel.
+func (r *Runtime) sandboxedKernel() bool { return r.opts.OCIRuntime == "runsc" }
 
 // Capabilities implements runtime.Runtime.
 func (r *Runtime) Capabilities() rt.Capabilities {
@@ -103,6 +132,7 @@ func (r *Runtime) Capabilities() rt.Capabilities {
 		ProcessIsolation: true, FSIsolation: true, NetworkIsolation: true,
 		MemoryLimit: true, PIDLimit: true, DiskQuota: true, ClockIsolation: true,
 		NoPrivEscalation: true, RealExecution: true,
+		KernelIsolation: r.sandboxedKernel(),
 	}
 }
 
@@ -182,6 +212,7 @@ func (r *Runtime) Create(ctx context.Context, spec rt.Spec) (rt.Sandbox, error) 
 		CapAdd:      []string{"CHOWN", "DAC_OVERRIDE", "FOWNER", "KILL", "SETUID", "SETGID"},
 		SecurityOpt: []string{"no-new-privileges"},
 		Init:        &init,
+		Runtime:     r.opts.OCIRuntime,
 		IpcMode:     "private",
 		Resources: container.Resources{
 			Memory:     spec.MemoryBytes,
@@ -221,7 +252,7 @@ func (r *Runtime) Create(ctx context.Context, spec rt.Spec) (rt.Sandbox, error) 
 		sb.initPID = insp.State.Pid
 		// Signalling other users' processes from the host needs root and
 		// a shared PID namespace with dockerd.
-		sb.hostPIDs = !r.opts.ForceExecKill && os.Geteuid() == 0 && sharesPIDNamespace(insp.State.Pid, created.ID)
+		sb.hostPIDs = !r.opts.ForceExecKill && !r.sandboxedKernel() && os.Geteuid() == 0 && sharesPIDNamespace(insp.State.Pid, created.ID)
 	}
 	sb.timer = time.AfterFunc(spec.Timeout, func() {
 		sb.log.Warn("sandbox lifetime exceeded; destroying", "timeout", spec.Timeout)
@@ -506,75 +537,101 @@ func (s *Sandbox) KillUser(ctx context.Context, uid int) error {
 	if uid == 0 {
 		return errors.New("docker: refusing to KillUser(0)")
 	}
+	var remaining []int
 	for attempt := 0; attempt < 50; attempt++ {
-		pids, err := s.userPIDs(ctx, uid)
+		var err error
+		if s.hostPIDs {
+			remaining, err = s.killFromHost(ctx, uid, attempt)
+		} else {
+			remaining, err = s.killFromInside(ctx, uid)
+		}
 		if err != nil {
 			return err
 		}
-		if len(pids) == 0 {
+		if len(remaining) == 0 {
 			return nil
-		}
-		if s.hostPIDs {
-			// Freeze so nothing can fork while we kill, signal by host PID,
-			// then thaw so the SIGKILLs are delivered. The cgroup v1
-			// freezer can fail to converge while a fork bomb is spawning
-			// ("unable to freeze"); then kill unfrozen and let the loop
-			// repeat. Freezing only speeds this up: the guarantee is the
-			// host-side verification that no process remains.
-			paused := s.r.cli.ContainerPause(ctx, s.id) == nil
-			if !paused {
-				s.log.Debug("freeze failed; killing without freeze", "attempt", attempt)
-			}
-			targets, err := s.userPIDs(ctx, uid)
-			if err == nil {
-				for _, p := range targets {
-					_ = syscall.Kill(p, syscall.SIGKILL)
-				}
-			}
-			if paused {
-				if uerr := s.r.cli.ContainerUnpause(context.WithoutCancel(ctx), s.id); uerr != nil {
-					return rt.Infra("docker unpause", uerr)
-				}
-			}
-			if err != nil {
-				return err
-			}
-		} else if err := s.killFromInside(ctx, uid); err != nil {
-			return err
 		}
 		time.Sleep(time.Duration(min(attempt*attempt, 100)) * time.Millisecond)
 	}
-	pids, _ := s.userPIDs(ctx, uid)
-	return fmt.Errorf("docker: %d processes of uid %d survived KillUser", len(pids), uid)
+	return fmt.Errorf("docker: %d processes of uid %d survived KillUser", len(remaining), uid)
 }
 
-// killFromInside signals every process of uid from a process of that uid
-// inside the sandbox (kill(-1) as a non-root user reaches exactly the
-// processes of that uid). A fork bomb may have used every PID, leaving no
-// room to start the kill, so the PIDs limit is raised by a few slots for
-// the duration of the kill and then restored.
-func (s *Sandbox) killFromInside(ctx context.Context, uid int) error {
+// killFromHost freezes the container so nothing can fork, SIGKILLs uid's
+// processes by host PID, thaws so the signals are delivered, and returns
+// what is still alive according to the host. The cgroup v1 freezer can fail
+// to converge while a fork bomb is spawning ("unable to freeze"); then it
+// kills unfrozen and the caller repeats. Freezing only speeds this up: the
+// guarantee is the host-side check that no process remains.
+func (s *Sandbox) killFromHost(ctx context.Context, uid, attempt int) ([]int, error) {
+	pids, err := s.userPIDs(ctx, uid)
+	if err != nil || len(pids) == 0 {
+		return pids, err
+	}
+	paused := s.r.cli.ContainerPause(ctx, s.id) == nil
+	if !paused {
+		s.log.Debug("freeze failed; killing without freeze", "attempt", attempt)
+	}
+	targets, err := s.userPIDs(ctx, uid)
+	if err == nil {
+		for _, p := range targets {
+			_ = syscall.Kill(p, syscall.SIGKILL)
+		}
+	}
+	if paused {
+		if uerr := s.r.cli.ContainerUnpause(context.WithoutCancel(ctx), s.id); uerr != nil {
+			return nil, rt.Infra("docker unpause", uerr)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.userPIDs(ctx, uid)
+}
+
+// killFromInside is used when arena cannot signal host PIDs (not root, a
+// remote daemon, or a user-space kernel such as gVisor whose PIDs are not
+// host PIDs). kill(-1) run as uid inside the sandbox reaches exactly that
+// uid's processes. A fork bomb may have used every PID, leaving no room for
+// the kill or for listing survivors, so the PIDs limit is raised by a few
+// slots for the round and then restored.
+func (s *Sandbox) killFromInside(ctx context.Context, uid int) ([]int, error) {
 	limit := s.spec.MaxPIDs
 	if limit <= 0 {
 		limit = 256
 	}
 	raised := limit + 8
+	bumped := true
 	if _, err := s.r.cli.ContainerUpdate(ctx, s.id, container.UpdateConfig{Resources: container.Resources{PidsLimit: &raised}}); err != nil {
-		return rt.Infra("docker update pids", err)
+		// Some OCI runtimes cannot update limits live; try anyway and rely
+		// on the verification loop.
+		s.log.Debug("could not raise pids limit for kill", "err", err)
+		bumped = false
 	}
-	_, err := s.Exec(ctx, rt.ExecRequest{Cmd: []string{"kill", "-9", "-1"}, User: rt.User{UID: uid, GID: uid}, Timeout: 10 * time.Second})
-	if _, uerr := s.r.cli.ContainerUpdate(context.WithoutCancel(ctx), s.id, container.UpdateConfig{Resources: container.Resources{PidsLimit: &limit}}); uerr != nil {
-		return rt.Infra("docker restore pids", uerr)
+	_, kerr := s.Exec(ctx, rt.ExecRequest{Cmd: []string{"kill", "-9", "-1"}, User: rt.User{UID: uid, GID: uid}, Timeout: 10 * time.Second})
+	remaining, lerr := s.userPIDs(ctx, uid)
+	if bumped {
+		if _, uerr := s.r.cli.ContainerUpdate(context.WithoutCancel(ctx), s.id, container.UpdateConfig{Resources: container.Resources{PidsLimit: &limit}}); uerr != nil {
+			return nil, rt.Infra("docker restore pids", uerr)
+		}
 	}
-	if err != nil && !rt.IsInfra(err) {
-		return err
+	if kerr != nil && !rt.IsInfra(kerr) {
+		return nil, kerr
 	}
-	return nil
+	if lerr != nil {
+		// Listing can fail transiently while the PID table is full; report
+		// "unknown survivors" so the caller retries.
+		s.log.Debug("list processes failed", "err", lerr)
+		return []int{-1}, nil
+	}
+	return remaining, nil
 }
 
 // userPIDs lists live (non-zombie) host PIDs owned by uid, read from the
 // host via `docker top`, never from inside the sandbox.
 func (s *Sandbox) userPIDs(ctx context.Context, uid int) ([]int, error) {
+	if s.r.sandboxedKernel() {
+		return s.userPIDsFromSandbox(ctx, uid)
+	}
 	top, err := s.r.cli.ContainerTop(ctx, s.id, []string{"-eo", "pid,uid,stat"})
 	if err != nil {
 		return nil, rt.Infra("docker top", err)
@@ -598,6 +655,33 @@ func (s *Sandbox) userPIDs(ctx context.Context, uid int) ([]int, error) {
 			if p, err := strconv.Atoi(row[pi]); err == nil {
 				out = append(out, p)
 			}
+		}
+	}
+	return out, nil
+}
+
+// userPIDsFromSandbox lists uid's live processes from the sandbox kernel's
+// /proc, read by root. Under gVisor the user-space kernel is the trusted
+// component, the root filesystem is read-only and the student cannot touch
+// root's tools, so this is the authoritative process table.
+func (s *Sandbox) userPIDsFromSandbox(ctx context.Context, uid int) ([]int, error) {
+	script := `for d in /proc/[0-9]*; do
+  [ -r "$d/status" ] || continue
+  u=$(awk '/^Uid:/{print $2}' "$d/status" 2>/dev/null)
+  st=$(awk '/^State:/{print $2}' "$d/status" 2>/dev/null)
+  [ "$u" = "$1" ] && [ "$st" != "Z" ] && echo "${d#/proc/}"
+done; true`
+	res, err := s.Exec(ctx, rt.ExecRequest{Cmd: []string{"sh", "-c", script, "sh", strconv.Itoa(uid)}, User: rt.Root, Timeout: 30 * time.Second})
+	if err != nil {
+		return nil, rt.Infra("list processes", err)
+	}
+	if res.ExitCode != 0 {
+		return nil, rt.Infra("list processes", fmt.Errorf("exit %d: %s", res.ExitCode, res.Stderr))
+	}
+	var out []int
+	for _, f := range strings.Fields(string(res.Stdout)) {
+		if p, err := strconv.Atoi(f); err == nil {
+			out = append(out, p)
 		}
 	}
 	return out, nil

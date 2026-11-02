@@ -36,7 +36,11 @@ func openRuntime(ctx context.Context, name string, log *slog.Logger) (rt.Runtime
 	case "fake":
 		return fake.New(), func() {}, nil
 	case "gvisor":
-		return gvisor.New(), func() {}, nil
+		r, err := gvisor.New(ctx, log)
+		if err != nil {
+			return nil, nil, err
+		}
+		return r, func() { r.Close() }, nil
 	case "firecracker":
 		return firecracker.New(), func() {}, nil
 	}

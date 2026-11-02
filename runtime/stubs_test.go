@@ -8,11 +8,10 @@ import (
 
 	rt "github.com/xartus2004/arena/runtime"
 	"github.com/xartus2004/arena/runtime/firecracker"
-	"github.com/xartus2004/arena/runtime/gvisor"
 )
 
 func TestStubsReturnUnsupported(t *testing.T) {
-	for _, r := range []rt.Runtime{gvisor.New(), firecracker.New()} {
+	for _, r := range []rt.Runtime{firecracker.New()} {
 		t.Run(r.Name(), func(t *testing.T) {
 			_, err := r.Create(context.Background(), rt.Spec{Image: "x", Timeout: time.Second})
 			if !errors.Is(err, rt.ErrUnsupported) {
