@@ -74,9 +74,16 @@ this container; run `dockerd >/tmp/dockerd.log 2>&1 &` first.
   (`ARENA_DOCKER_RUNTIME=runsc`; experimental / continue-on-error).
 - [x] CI actions bumped to Node 24 versions; README cgroup v1/v2 note fixed.
 
+- [x] gVisor verified in CI (run #12): all integration tests pass and the
+  red-team suite is 8 BLOCKED / 4 DETECTED / 0 NOT PROTECTED
+  (`docs/REDTEAM-gvisor.md`). Fixes found along the way: sandbox OOM deaths
+  are classified as `resource_exhaustion` (agent failure, not infra); under
+  gVisor the host PIDs cgroup is a generous ceiling and RLIMIT_NPROC is set
+  per exec; no loopback under gVisor (mini-crm skips there). The job is no
+  longer continue-on-error.
+
 ## Next (suggested follow-ups)
-1. Make the `gvisor` CI job green, then put its red-team column in the README
-   and drop continue-on-error.
+1. Loopback under gVisor so mini-crm can run there.
 2. Network allowlist via a per-sandbox egress proxy.
 3. S3 implementation of `store.Blobs`; AgentEnv protocol adapter.
 4. A distinct `deadline` failure kind.

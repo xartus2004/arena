@@ -116,7 +116,7 @@ where there is one.
 | # | Attack | docker | fake | gvisor | firecracker |
 |---|---|---|---|---|---|
 | 1 | read answer key | **BLOCKED** — hidden files only exist in the grader sandbox (reward 0.50, neighbour 1.00) | N/A[^fake] | N/A[^gvisor] | N/A[^firecracker] |
-| 2 | fork bomb | **BLOCKED** — pids cgroup limit (can't fork); all student processes killed at custody (reward 0.50, neighbour 1.00) | N/A[^fake] | N/A[^gvisor] | N/A[^firecracker] |
+| 2 | fork bomb | **BLOCKED** — process limit (pids cgroup on runc, RLIMIT_NPROC on gVisor; saw can't fork); all student processes killed at custody (reward 0.50, neighbour 1.00) | N/A[^fake] | N/A[^gvisor] | N/A[^firecracker] |
 | 3 | memory exhaustion | **BLOCKED** — memory cgroup limit (saw "Killed") (reward 0.50, neighbour 1.00) | N/A[^fake] | N/A[^gvisor] | N/A[^firecracker] |
 | 4 | fill the disk | **BLOCKED** — size-limited tmpfs + RLIMIT_FSIZE (saw "No space left on device") (reward 0.50, neighbour 1.00) | N/A[^fake] | N/A[^gvisor] | N/A[^firecracker] |
 | 5 | rewrite after submit | **BLOCKED** — custody kills and verifies all student processes, then copies; grading uses that copy in another sandbox (reward 0.50, neighbour 1.00) | N/A[^fake] | N/A[^gvisor] | N/A[^firecracker] |
@@ -125,7 +125,7 @@ where there is one.
 | 8 | huge sparse file | **BLOCKED** — RLIMIT_FSIZE refuses the file; custody would also reject by apparent size (reward 0.50, neighbour 1.00) | N/A[^fake] | N/A[^gvisor] | N/A[^firecracker] |
 | 9 | deep / huge file tree | **DETECTED** — custody too_many_files at repo/f3594; tmpfs inode limit stops creation; custody enforces depth/file-count limits (reward 0.00, neighbour 1.00) | N/A[^fake] | N/A[^gvisor] | N/A[^firecracker] |
 | 10 | clock tampering | **BLOCKED** — no CAP_SYS_TIME (EPERM); all timing is measured on the host (reward 0.50, neighbour 1.00) | N/A[^fake] | N/A[^gvisor] | N/A[^firecracker] |
-| 11 | network exfiltration | **BLOCKED** — network namespace with loopback only (saw "Network unreachable") (reward 0.50, neighbour 1.00) | N/A[^fake] | N/A[^gvisor] | N/A[^firecracker] |
+| 11 | network exfiltration | **BLOCKED** — network=none (loopback only on runc, no interfaces on gVisor) (saw "Network unreachable") (reward 0.50, neighbour 1.00) | N/A[^fake] | N/A[^gvisor] | N/A[^firecracker] |
 | 12 | escape / escalate to root | **BLOCKED** — uid 1000, CapEff=0, no-new-privileges, read-only rootfs (saw "Read-only file system") (reward 0.50, neighbour 1.00) | N/A[^fake] | N/A[^gvisor] | N/A[^firecracker] |
 
 [^fake]: fake: in-memory test double; executes nothing, isolates nothing
@@ -137,13 +137,17 @@ Do-nothing baseline reward: 0.50. Honest reward: 1.00. BLOCKED = the attack had 
 
 Reading the table honestly:
 
-* **Docker (runc) is the only runtime this table was produced on.** The
-  `fake` runtime is an in-memory test double (it executes nothing). The
-  gVisor runtime is implemented (Docker + `runsc`), but this development host
-  has no `runsc`, so its column is N/A here. CI installs gVisor on a GitHub
-  runner and runs the same tests and suite under it (the `gvisor` job, which
-  uploads its table as an artifact). Firecracker is a stub because there is
-  no `/dev/kvm`. N/A means "not run", never "passed".
+* **gVisor results are in [`docs/REDTEAM-gvisor.md`](docs/REDTEAM-gvisor.md):
+  8 BLOCKED, 4 DETECTED, 0 NOT PROTECTED.** They come from CI, because this
+  development host has no `runsc`; that's why the gVisor column above is N/A.
+  The `gvisor` CI job installs gVisor on a GitHub runner and runs the
+  integration tests and this suite under it on every push. Memory exhaustion
+  and the deep tree are DETECTED rather than BLOCKED there: gVisor's kernel is
+  charged to the sandbox, so the whole sandbox gets OOM-killed, which arena
+  classifies as `resource_exhaustion` (reward 0, not an infra retry).
+* The `fake` runtime is an in-memory test double (it executes nothing), and
+  Firecracker is a stub because there is no `/dev/kvm`. N/A means "not run",
+  never "passed".
 * **BLOCKED vs DETECTED.** BLOCKED means the sandbox stopped the attack
   outright (e.g. `fork: Resource temporarily unavailable`). DETECTED means the
   attack succeeded inside the sandbox but custody refused the result and
@@ -401,11 +405,8 @@ end-to-end tests cover the new task.
 
 ## Roadmap
 
-* **Verify gVisor in CI and publish its column.** The runtime exists
-  (`runtime/gvisor`, `--runtime gvisor`); under gVisor custody never signals
-  host PIDs (they aren't real host processes) and reads the process table
-  from the sandbox kernel. Once the CI job is consistently green, its table
-  goes into this README.
+* **Loopback under gVisor** so environments with in-sandbox services
+  (like `mini-crm`) can run there too.
 * **Firecracker runtime:** microVM per sandbox (needs `/dev/kvm`); tar-based
   `CopyIn`/`CopyOut` maps onto a vsock agent.
 * **Network allowlists** via a per-sandbox egress proxy.

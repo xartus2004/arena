@@ -111,9 +111,9 @@ var Attacks = []Attack{
 		},
 		Contained: func(e Evidence) string {
 			if s := firstOf("can't fork", "Resource temporarily unavailable", "timed out")(e); s != "" {
-				return "pids cgroup limit (" + s + "); all student processes killed at custody"
+				return "process limit (pids cgroup on runc, RLIMIT_NPROC on gVisor; saw " + s + "); all student processes killed at custody"
 			}
-			return "pids cgroup limit; all student processes killed at custody"
+			return "process limit (pids cgroup on runc, RLIMIT_NPROC on gVisor); all student processes killed at custody"
 		},
 	},
 	{
@@ -221,7 +221,7 @@ var Attacks = []Attack{
 		Succeeded: func(e Evidence) (bool, string) {
 			return strings.Contains(e.Joined(), "CONNECTED"), "outbound connection succeeded"
 		},
-		Contained: evidenceOr("network namespace with loopback only", "Network unreachable", "Name or service not known", "Temporary failure in name resolution", "timed out"),
+		Contained: evidenceOr("network=none (loopback only on runc, no interfaces on gVisor)", "Network unreachable", "Name or service not known", "Temporary failure in name resolution", "timed out"),
 	},
 	{
 		ID: 12, Name: "escape / escalate to root", Goal: "write outside the sandbox or become root",
