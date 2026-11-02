@@ -229,6 +229,13 @@ func (r *Runtime) Create(ctx context.Context, spec rt.Spec) (rt.Sandbox, error) 
 	if spec.MemoryBytes == 0 {
 		hc.Resources.MemorySwap = 0
 	}
+	if r.sandboxedKernel() {
+		// gVisor's tasks live inside its user-space kernel, so the host PIDs
+		// cgroup does not bound them. RLIMIT_NPROC is enforced by the
+		// sandbox kernel per uid and, unlike under runc, is not shared with
+		// other sandboxes' uid 1000, so it is safe to use as the cap here.
+		hc.Resources.Ulimits = append(hc.Resources.Ulimits, &units.Ulimit{Name: "nproc", Soft: pids, Hard: pids})
+	}
 	cfg := &container.Config{
 		Image:           spec.Image,
 		Cmd:             []string{"sleep", "2147483647"},
@@ -593,7 +600,7 @@ func (s *Sandbox) killFromHost(ctx context.Context, uid, attempt int) ([]int, er
 // host PIDs). kill(-1) run as uid inside the sandbox reaches exactly that
 // uid's processes. A fork bomb may have used every PID, leaving no room for
 // the kill or for listing survivors, so the PIDs limit is raised by a few
-// slots for the round and then restored.
+// slots (and memory by 64 MiB) for the round and then restored.
 func (s *Sandbox) killFromInside(ctx context.Context, uid int) ([]int, error) {
 	limit := s.spec.MaxPIDs
 	if limit <= 0 {
@@ -601,16 +608,24 @@ func (s *Sandbox) killFromInside(ctx context.Context, uid int) ([]int, error) {
 	}
 	raised := limit + 8
 	bumped := true
-	if _, err := s.r.cli.ContainerUpdate(ctx, s.id, container.UpdateConfig{Resources: container.Resources{PidsLimit: &raised}}); err != nil {
+	up := container.Resources{PidsLimit: &raised}
+	down := container.Resources{PidsLimit: &limit}
+	if mem := s.spec.MemoryBytes; mem > 0 {
+		// A memory hog can leave no room to start the kill or the listing;
+		// give the round 64 MiB of headroom too.
+		up.Memory, up.MemorySwap = mem+64<<20, mem+64<<20
+		down.Memory, down.MemorySwap = mem, mem
+	}
+	if _, err := s.r.cli.ContainerUpdate(ctx, s.id, container.UpdateConfig{Resources: up}); err != nil {
 		// Some OCI runtimes cannot update limits live; try anyway and rely
 		// on the verification loop.
-		s.log.Debug("could not raise pids limit for kill", "err", err)
+		s.log.Debug("could not raise pids limits for kill", "err", err)
 		bumped = false
 	}
 	_, kerr := s.Exec(ctx, rt.ExecRequest{Cmd: []string{"kill", "-9", "-1"}, User: rt.User{UID: uid, GID: uid}, Timeout: 10 * time.Second})
 	remaining, lerr := s.userPIDs(ctx, uid)
 	if bumped {
-		if _, uerr := s.r.cli.ContainerUpdate(context.WithoutCancel(ctx), s.id, container.UpdateConfig{Resources: container.Resources{PidsLimit: &limit}}); uerr != nil {
+		if _, uerr := s.r.cli.ContainerUpdate(context.WithoutCancel(ctx), s.id, container.UpdateConfig{Resources: down}); uerr != nil {
 			return nil, rt.Infra("docker restore pids", uerr)
 		}
 	}

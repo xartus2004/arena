@@ -233,7 +233,8 @@ func runSteps(ctx context.Context, log *slog.Logger, sb rt.Sandbox, steps []env.
 		if res.ExitCode != 0 || res.TimedOut {
 			// A broken setup is an environment/infra problem, never the agent's.
 			return rt.Infra(fmt.Sprintf("%s step %d", what, i),
-				fmt.Errorf("exit %d (timed out: %v): %s", res.ExitCode, res.TimedOut, truncate(string(res.Stderr), 2048)))
+				fmt.Errorf("exit %d (timed out: %v): stderr=%q stdout=%q", res.ExitCode, res.TimedOut,
+					truncate(string(res.Stderr), 2048), truncate(string(res.Stdout), 2048)))
 		}
 	}
 	return nil

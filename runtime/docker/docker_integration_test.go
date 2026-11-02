@@ -256,3 +256,34 @@ func TestAllowlistUnsupported(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// A process that holds all of the sandbox's memory must not stop custody
+// from killing it (the in-sandbox path needs headroom to start `kill`).
+func TestKillUserMemoryHog(t *testing.T) {
+	for _, m := range killModes {
+		t.Run(m.name, func(t *testing.T) {
+			r := newRuntimeOpts(t, Options{PullMissing: true, ForceExecKill: m.force})
+			sb := newSandbox(t, r, func(s *rt.Spec) { s.MemoryBytes = 96 << 20 })
+			ctx := context.Background()
+			// Allocate in chunks until ~90% of the limit, then hold it.
+			sh(t, sb, rt.Student, `nohup python3 -c "
+import time
+x=[]
+try:
+    while len(x) < 86: x.append(bytearray(1<<20))
+except MemoryError:
+    pass
+time.sleep(600)" >/dev/null 2>&1 &
+sleep 2`)
+			if pids, _ := sb.userPIDs(ctx, rt.Student.UID); len(pids) == 0 {
+				t.Fatal("memory hog not running")
+			}
+			if err := sb.KillUser(ctx, rt.Student.UID); err != nil {
+				t.Fatal(err)
+			}
+			if pids, _ := sb.userPIDs(ctx, rt.Student.UID); len(pids) != 0 {
+				t.Fatalf("survivors: %v", pids)
+			}
+		})
+	}
+}
