@@ -201,6 +201,15 @@ func (r *Runtime) Create(ctx context.Context, spec rt.Spec) (rt.Sandbox, error) 
 	if pids <= 0 {
 		pids = 256
 	}
+	hostPids := pids
+	if r.sandboxedKernel() {
+		// Under gVisor the host PIDs cgroup counts the gVisor kernel's own
+		// host threads, not the agent's processes; a tight limit makes the
+		// sandbox kernel itself die. Keep a generous host ceiling and
+		// enforce the agent's process count inside the sandbox with
+		// RLIMIT_NPROC (see Exec).
+		hostPids = max(pids*16, 1024)
+	}
 	init := true
 	hc := &container.HostConfig{
 		NetworkMode:    "none",
@@ -220,7 +229,7 @@ func (r *Runtime) Create(ctx context.Context, spec rt.Spec) (rt.Sandbox, error) 
 			Memory:     spec.MemoryBytes,
 			MemorySwap: spec.MemoryBytes, // no swap
 			NanoCPUs:   int64(spec.CPUs * 1e9),
-			PidsLimit:  &pids,
+			PidsLimit:  &hostPids,
 			Ulimits: []*units.Ulimit{
 				{Name: "fsize", Soft: disk, Hard: disk},
 				{Name: "nofile", Soft: 1024, Hard: 1024},
@@ -251,7 +260,7 @@ func (r *Runtime) Create(ctx context.Context, spec rt.Spec) (rt.Sandbox, error) 
 	if err != nil {
 		return nil, rt.Infra("docker create", err)
 	}
-	sb := &Sandbox{id: created.ID, r: r, spec: spec, log: r.log.With("sandbox", created.ID[:12])}
+	sb := &Sandbox{id: created.ID, r: r, spec: spec, pidsLimit: hostPids, log: r.log.With("sandbox", created.ID[:12])}
 	if err := r.cli.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
 		_ = sb.Destroy(context.WithoutCancel(ctx))
 		return nil, rt.Infra("docker start", err)
@@ -305,7 +314,9 @@ type Sandbox struct {
 	log      *slog.Logger
 	initPID  int
 	hostPIDs bool
-	timer    *time.Timer
+	// pidsLimit is the host PIDs cgroup limit the container was created with.
+	pidsLimit int64
+	timer     *time.Timer
 
 	mu        sync.Mutex
 	destroyed bool
@@ -638,10 +649,7 @@ func (s *Sandbox) killFromHost(ctx context.Context, uid, attempt int) ([]int, er
 // the kill or for listing survivors, so the PIDs limit is raised by a few
 // slots (and memory by 64 MiB) for the round and then restored.
 func (s *Sandbox) killFromInside(ctx context.Context, uid int) ([]int, error) {
-	limit := s.spec.MaxPIDs
-	if limit <= 0 {
-		limit = 256
-	}
+	limit := s.pidsLimit
 	raised := limit + 8
 	bumped := true
 	up := container.Resources{PidsLimit: &raised}
