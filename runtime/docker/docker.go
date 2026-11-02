@@ -133,6 +133,8 @@ func (r *Runtime) Capabilities() rt.Capabilities {
 		MemoryLimit: true, PIDLimit: true, DiskQuota: true, ClockIsolation: true,
 		NoPrivEscalation: true, RealExecution: true,
 		KernelIsolation: r.sandboxedKernel(),
+		// gVisor with network "none" exposes no interfaces at all, not even lo.
+		Loopback: !r.sandboxedKernel(),
 	}
 }
 
@@ -312,6 +314,26 @@ type Sandbox struct {
 // ID implements runtime.Sandbox.
 func (s *Sandbox) ID() string { return s.id }
 
+// deadReason returns nil while the container runs. Once it has stopped, it
+// returns ErrResourceExhausted if Docker reports an OOM kill (the sandbox's
+// own processes used up its memory) and an infra error otherwise.
+func (s *Sandbox) deadReason(ctx context.Context) error {
+	insp, err := s.r.cli.ContainerInspect(context.WithoutCancel(ctx), s.id)
+	if err != nil {
+		if cerrdefs.IsNotFound(err) {
+			return rt.Infra("sandbox", errors.New("container is gone"))
+		}
+		return nil
+	}
+	if insp.State == nil || insp.State.Running {
+		return nil
+	}
+	if insp.State.OOMKilled {
+		return fmt.Errorf("docker: sandbox OOM-killed: %w", rt.ErrResourceExhausted)
+	}
+	return rt.Infra("sandbox", fmt.Errorf("container stopped (exit %d): %s", insp.State.ExitCode, insp.State.Error))
+}
+
 // HostPIDKill reports whether KillUser can signal processes from the host.
 func (s *Sandbox) HostPIDKill() bool { return s.hostPIDs }
 
@@ -359,6 +381,9 @@ func (s *Sandbox) exec(ctx context.Context, req rt.ExecRequest, stdout, stderr i
 	}
 	created, err := s.r.cli.ContainerExecCreate(ctx, s.id, opts)
 	if err != nil {
+		if dead := s.deadReason(ctx); dead != nil {
+			return 0, false, dead
+		}
 		return 0, false, rt.Infra("docker exec create", err)
 	}
 	resp, err := s.r.cli.ContainerExecAttach(ctx, created.ID, container.ExecAttachOptions{})
@@ -633,6 +658,9 @@ func (s *Sandbox) killFromInside(ctx context.Context, uid int) ([]int, error) {
 		return nil, kerr
 	}
 	if lerr != nil {
+		if dead := s.deadReason(ctx); dead != nil {
+			return nil, dead
+		}
 		// Listing can fail transiently while the PID table is full; report
 		// "unknown survivors" so the caller retries.
 		s.log.Debug("list processes failed", "err", lerr)

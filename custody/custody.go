@@ -61,6 +61,7 @@ const (
 	KindCorrupt      Kind = "corrupt"
 	KindMissing      Kind = "missing"
 	KindProcesses    Kind = "processes_survived"
+	KindResources    Kind = "resource_exhaustion" // the sandbox died of its own resource use
 )
 
 // Violation is a submission rejected by custody. It is the agent's fault,

@@ -277,6 +277,9 @@ func (e *Episode) Step(ctx context.Context, call ToolCall) (Observation, error) 
 		return e.finishLocked(ctx, "")
 	}
 	res, err := e.runToolLocked(ctx, call, e.deadline.Sub(now))
+	if errors.Is(err, rt.ErrResourceExhausted) {
+		return e.exhaustedLocked(ctx, err), nil
+	}
 	if err != nil {
 		return Observation{}, e.failLocked(ctx, err)
 	}
@@ -353,6 +356,19 @@ func (e *Episode) Deadline() time.Time {
 	return e.deadline
 }
 
+// exhaustedLocked ends the episode when the agent's own resource use killed
+// its sandbox: there is nothing trustworthy to take into custody, so the
+// episode is DONE with reward 0 and a resource_exhaustion violation.
+func (e *Episode) exhaustedLocked(ctx context.Context, cause error) Observation {
+	if e.state == StudentTurn {
+		e.transition(Custody, "sandbox exhausted its resources")
+	}
+	v := e.closeStudentWith(ctx, &custody.Violation{Kind: custody.KindResources, Detail: cause.Error()})
+	e.record(Event{Type: "custody", Data: map[string]any{"violation": v}})
+	e.completeLocked(0, map[string]any{}, v, nil, "")
+	return e.observationLocked(nil)
+}
+
 // finishLocked runs CUSTODY and GRADE. forced is "" for a voluntary submit.
 func (e *Episode) finishLocked(ctx context.Context, forced string) (Observation, error) {
 	meta := map[string]any{}
@@ -361,6 +377,9 @@ func (e *Episode) finishLocked(ctx context.Context, forced string) (Observation,
 	}
 	e.transition(Custody, forced)
 	man, artifact, viol, err := e.custodyLocked(ctx)
+	if errors.Is(err, rt.ErrResourceExhausted) {
+		return e.exhaustedLocked(ctx, err), nil
+	}
 	if err != nil {
 		return Observation{}, e.failLocked(ctx, err)
 	}
@@ -399,7 +418,7 @@ func (e *Episode) custodyLocked(ctx context.Context) (custody.Manifest, string, 
 	}
 	for _, uid := range uids {
 		if err := e.student.KillUser(ctx, uid); err != nil {
-			if rt.IsInfra(err) {
+			if rt.IsInfra(err) || errors.Is(err, rt.ErrResourceExhausted) {
 				return none, "", nil, err
 			}
 			// Processes that cannot be killed mean we cannot take custody
@@ -428,6 +447,9 @@ func (e *Episode) custodyLocked(ctx context.Context) (custody.Manifest, string, 
 	climits := custody.Limits{MaxFiles: lim.MaxFiles, MaxBytes: int64(lim.MaxBytes), MaxFileBytes: int64(lim.MaxFileBytes), MaxDepth: lim.MaxDepth}
 	rc, err := e.student.CopyOut(ctx, e.task.Submission)
 	if err != nil {
+		if errors.Is(err, rt.ErrResourceExhausted) {
+			return none, "", nil, err
+		}
 		if isNotExist(err) {
 			return none, "", e.closeStudentWith(ctx, &custody.Violation{Kind: custody.KindMissing, Path: e.task.Submission, Detail: "submission not found"}), nil
 		}

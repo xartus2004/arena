@@ -21,6 +21,11 @@ var ErrUnsupported = errors.New("runtime: unsupported")
 // ErrDestroyed is returned when operating on a sandbox that has been destroyed.
 var ErrDestroyed = errors.New("runtime: sandbox destroyed")
 
+// ErrResourceExhausted means the sandbox died because something inside it
+// exhausted the sandbox's own resources (e.g. it was OOM-killed). It is the
+// agent's doing, not an infrastructure failure, and is never retried.
+var ErrResourceExhausted = errors.New("runtime: sandbox exhausted its resources")
+
 // Well-known users inside every sandbox. Numeric IDs are used so that images
 // do not need matching /etc/passwd entries.
 var (
@@ -209,6 +214,7 @@ type Capabilities struct {
 	NoPrivEscalation bool // setuid/caps cannot lift the student to root
 	RealExecution    bool // commands are actually executed
 	KernelIsolation  bool // the sandbox does not talk to the host kernel directly (gVisor, microVM)
+	Loopback         bool // NetworkNone sandboxes still have a working 127.0.0.1
 }
 
 // InfraError marks a failure of the platform rather than of the agent.
@@ -223,8 +229,9 @@ func (e *InfraError) Unwrap() error { return e.Err }
 
 // Infra wraps err as an InfraError (nil stays nil).
 func Infra(op string, err error) error {
-	if err == nil {
-		return nil
+	if err == nil || errors.Is(err, ErrResourceExhausted) {
+		// Resource exhaustion is the agent's doing; never relabel it.
+		return err
 	}
 	var ie *InfraError
 	if errors.As(err, &ie) {

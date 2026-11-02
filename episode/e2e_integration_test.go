@@ -76,6 +76,9 @@ func TestFixTheBugEndToEnd(t *testing.T) {
 
 func TestMiniCRMEndToEnd(t *testing.T) {
 	cfg := dockerConfig(t)
+	if !cfg.Runtime.Capabilities().Loopback {
+		t.Skipf("mini-crm needs a loopback interface for its in-sandbox HTTP service; %s with network=none has none", cfg.Runtime.Name())
+	}
 	task := loadTask(t, "mini-crm", "update-customers")
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()

@@ -70,6 +70,12 @@ func sh(t *testing.T, sb *Sandbox, u rt.User, script string) rt.Result {
 func TestIsolationGuarantees(t *testing.T) {
 	r := newRuntime(t)
 	sb := newSandbox(t, r, nil)
+	// runc: the PIDs cgroup bounds the sandbox. gVisor: guest tasks are
+	// not host tasks, so the cap is RLIMIT_NPROC enforced by its kernel.
+	pidsCheck := "cat /sys/fs/cgroup/pids/pids.max 2>/dev/null || cat /sys/fs/cgroup/pids.max"
+	if r.sandboxedKernel() {
+		pidsCheck = "ulimit -u"
+	}
 	tests := []struct {
 		name     string
 		user     rt.User
@@ -82,7 +88,8 @@ func TestIsolationGuarantees(t *testing.T) {
 		{"rootfs read-only for root", rt.Root, "touch /etc/pwned", -1, ""},
 		{"rootfs read-only for student", rt.Student, "touch /usr/pwned", -1, ""},
 		{"no network", rt.Student, "python3 -c \"import socket; socket.create_connection(('1.1.1.1', 80), timeout=3)\"", -1, ""},
-		{"only loopback", rt.Student, "ls /sys/class/net | tr '\\n' ' '", 0, "lo"},
+		// runc shows only lo; gVisor with network none shows no interface at all.
+		{"no interface besides lo", rt.Student, "ls /sys/class/net | grep -vx lo | wc -l", 0, "0"},
 		// busybox `date -s` exits 0 even when settimeofday fails, so check the
 		// clock afterwards rather than trusting the exit code.
 		{"no clock change", rt.Root, "date -s '2001-01-01 00:00:00' >/dev/null 2>&1; test $(date +%Y) -gt 2020 && echo unchanged", 0, "unchanged"},
@@ -92,7 +99,7 @@ func TestIsolationGuarantees(t *testing.T) {
 		{"student has no caps", rt.Student, "grep CapEff /proc/self/status | tr -d '\\t '", 0, "CapEff:0000000000000000"},
 		{"disk quota", rt.Student, "dd if=/dev/zero of=/workspace/big bs=1M count=64", -1, ""},
 		{"fsize blocks sparse", rt.Student, "truncate -s 1T /workspace/sparse", -1, ""},
-		{"pids limited", rt.Student, "cat /sys/fs/cgroup/pids/pids.max 2>/dev/null || cat /sys/fs/cgroup/pids.max", 0, "64"},
+		{"pids limited", rt.Student, pidsCheck, 0, "64"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -182,7 +189,15 @@ func testKillUserForkBomb(t *testing.T, force bool) {
 	sb := newSandbox(t, r, nil)
 	ctx := context.Background()
 	_, _ = sb.Exec(ctx, rt.ExecRequest{Cmd: []string{"sh", "-c", "bomb() { bomb | bomb & }; bomb"}, User: rt.Student, Timeout: 2 * time.Second})
-	if err := sb.KillUser(ctx, rt.Student.UID); err != nil {
+	err := sb.KillUser(ctx, rt.Student.UID)
+	if errors.Is(err, rt.ErrResourceExhausted) && r.sandboxedKernel() {
+		// Under gVisor a fork bomb can exhaust the sandbox's memory and get
+		// it OOM-killed. That must be reported as exhaustion (fail closed,
+		// the agent's fault), never as success.
+		t.Logf("sandbox exhausted, reported correctly: %v", err)
+		return
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 	res := sh(t, sb, rt.Student, "echo alive")
@@ -265,12 +280,13 @@ func TestKillUserMemoryHog(t *testing.T) {
 			r := newRuntimeOpts(t, Options{PullMissing: true, ForceExecKill: m.force})
 			sb := newSandbox(t, r, func(s *rt.Spec) { s.MemoryBytes = 96 << 20 })
 			ctx := context.Background()
-			// Allocate in chunks until ~90% of the limit, then hold it.
+			// Allocate ~60% of the limit (gVisor's own kernel needs part of
+			// the sandbox's memory), then hold it.
 			sh(t, sb, rt.Student, `nohup python3 -c "
 import time
 x=[]
 try:
-    while len(x) < 86: x.append(bytearray(1<<20))
+    while len(x) < 56: x.append(bytearray(1<<20))
 except MemoryError:
     pass
 time.sleep(600)" >/dev/null 2>&1 &

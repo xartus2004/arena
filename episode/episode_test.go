@@ -376,6 +376,43 @@ func TestExecInfraFailureDuringTurn(t *testing.T) {
 	}
 }
 
+// A sandbox killed by the agent's own resource use (e.g. OOM under gVisor)
+// is an agent failure: reward 0 with a violation, never an infra retry.
+func TestResourceExhaustionIsAgentFailure(t *testing.T) {
+	for _, where := range []string{"during tool call", "during custody"} {
+		t.Run(where, func(t *testing.T) {
+			ctx := context.Background()
+			h := newHarness(t)
+			ep := New(h.cfg, h.task, "ep-oom", 1)
+			mustStart(t, ep)
+			sb := studentSandbox(t, h)
+			var obs Observation
+			var err error
+			if where == "during tool call" {
+				sb.SetExhausted(true)
+				obs, err = ep.Step(ctx, ToolCall{Tool: ToolBash, Command: "hog"})
+			} else {
+				_, _ = ep.Step(ctx, writeCall("/workspace/out/answer.txt", secret))
+				sb.SetExhausted(true)
+				obs, err = ep.Step(ctx, ToolCall{Tool: ToolSubmit})
+			}
+			if err != nil || rt.IsInfra(err) {
+				t.Fatalf("err = %v", err)
+			}
+			o := obs.Outcome
+			if !obs.Done || o.Status != StatusDone || o.Reward != 0 || o.Violation == nil || o.Violation.Kind != custody.KindResources {
+				t.Fatalf("outcome %+v violation %+v", o, o.Violation)
+			}
+			if len(h.rt.Live()) != 0 {
+				t.Fatal("sandboxes leaked")
+			}
+		})
+	}
+	if rt.IsInfra(rt.Infra("x", fmt.Errorf("wrapped: %w", rt.ErrResourceExhausted))) {
+		t.Fatal("Infra must not relabel resource exhaustion")
+	}
+}
+
 func TestTimeLimitForcesSubmission(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t)

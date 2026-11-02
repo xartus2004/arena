@@ -152,6 +152,8 @@ type Sandbox struct {
 	stubborn map[int]bool
 	// FailExec makes Exec return an infra error.
 	failExec atomic.Bool
+	// exhausted simulates a sandbox killed by its own resource use.
+	exhausted atomic.Bool
 }
 
 // ID implements runtime.Sandbox.
@@ -166,6 +168,10 @@ func (s *Sandbox) Destroyed() bool {
 
 // SetFailExec makes subsequent Exec calls fail with an infra error.
 func (s *Sandbox) SetFailExec(v bool) { s.failExec.Store(v) }
+
+// SetExhausted makes Exec, KillUser and CopyOut fail with
+// runtime.ErrResourceExhausted, as if the sandbox had been OOM-killed.
+func (s *Sandbox) SetExhausted(v bool) { s.exhausted.Store(v) }
 
 // SetStubborn makes processes of uid survive KillUser.
 func (s *Sandbox) SetStubborn(uid int) {
@@ -274,6 +280,9 @@ func (s *Sandbox) Exec(ctx context.Context, req rt.ExecRequest) (rt.Result, erro
 	s.mu.Unlock()
 	if s.failExec.Load() {
 		return rt.Result{}, rt.Infra("exec", errors.New("fake: injected exec failure"))
+	}
+	if s.exhausted.Load() {
+		return rt.Result{}, fmt.Errorf("fake: sandbox OOM-killed: %w", rt.ErrResourceExhausted)
 	}
 	if req.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -572,6 +581,9 @@ func (zeroReader) Read(p []byte) (int, error) {
 
 // KillUser implements runtime.Sandbox.
 func (s *Sandbox) KillUser(ctx context.Context, uid int) error {
+	if s.exhausted.Load() {
+		return fmt.Errorf("fake: sandbox OOM-killed: %w", rt.ErrResourceExhausted)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.checkAlive(); err != nil {
